@@ -1,0 +1,677 @@
+---
+title: "Predictive Modeling Report"
+author: "Giodanno Limin"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(mgcv)
+```
+
+```{r 0}
+# get the training data
+train <- read.csv("trainingdata.csv")
+
+# direct access
+attach(train)
+# write a cv_rmse function
+cv_rmse <- function(formula, data, K = 10) {
+  set.seed(1)
+  n <- nrow(data)
+  folds <- sample(rep(1:K, length.out = n))
+  
+  rmse <- numeric(K)
+  
+  for (k in 1:K) {
+    train_fold <- data[folds != k, ]
+    test_fold  <- data[folds == k, ]
+    
+    fit <- lm(formula, data=train_fold)
+    pred <- predict(fit, newdata=test_fold)
+    
+    rmse[k] <- sqrt(mean((pred - test_fold$y)^2))
+  }
+  
+  return(list(
+    mean_RMSE = mean(rmse),
+    sd_RMSE   = sd(rmse),
+    all_RMSE  = rmse
+  ))
+}
+
+```
+
+```{r 1}
+lm1 = lm(y~.,data=train)
+summary(lm1)
+cv_rmse(lm1,train)
+```
+```{r 2}
+sig_vars <- summary(lm1)$coefficients
+sig_vars[sig_vars[, "Pr(>|t|)"] < 0.05, ]
+lm2 = lm(y~X7+X9+X19+X21+X30+X40+X87+X88+X111,data=train)
+summary(lm2)
+cv_rmse(lm2,train)
+```
+Let's try better way
+```{r 4}
+cor_with_y <- function(x) {
+  cor(train$y, x)
+}
+cors <- sapply(train[, -1], cor_with_y)
+head(sort(abs(cors), decreasing=TRUE), 10)
+
+top10 <- names(sort(abs(cors), decreasing = TRUE))[1:10]
+top10
+
+for (var in top10) {
+  plot(
+    train[[var]], train$y,
+    main = paste(var, "vs y"),
+    xlab = var,
+    ylab = "y",
+    pch = 19,
+    col = rgb(0, 0, 1, 0.4)   
+  )
+}
+
+lm4 = lm(y~X66+X69+X21,data=train)
+summary(lm4)
+cv_rmse(lm4,train)
+```
+Now let's check if the adding other variable lower the mean_RMSE
+"X19"  "X45"  "X111" "X41"  "X38"  "X3"   "X59"
+```{r 5}
+vars_to_test <- c("X19", "X45", "X111", "X41", "X38", "X3", "X59")
+
+results <- data.frame(
+  variable = vars_to_test,
+  mean_RMSE = NA
+)
+
+base_form <- "y ~ X66 + X69 + X21"
+base_rmse <- cv_rmse(as.formula(base_form), train)$mean_RMSE
+
+results <- data.frame(
+  variable = vars_to_test,
+  mean_RMSE = NA,
+  improvement = NA
+)
+
+for (i in seq_along(vars_to_test)) {
+
+  var <- vars_to_test[i]
+
+  # construct formula dynamically
+  form <- as.formula(
+    paste(base_form, "+", var)
+  )
+
+  # compute rmse
+  new_rmse <- cv_rmse(form, train)$mean_RMSE
+
+  # fill results
+  results$mean_RMSE[i] <- new_rmse
+  results$improvement[i] <- new_rmse < base_rmse
+}
+
+results
+
+lm5 = lm(y~X66+X69+X21+X19+X111+X3+X59,data=train)
+cv_rmse(lm5,train)
+```
+Now let's try polynomial for X66, X69, X21, and X3.
+```{r 6}
+search_poly_multivar <- function(max66 = 10, max69 = 10, max21 = 10) {
+  results <- data.frame()
+  
+  for (d66 in 1:max66) {
+    for (d69 in 1:max69) {
+      for (d21 in 1:max21) {
+        
+        form <- as.formula(
+          paste(
+            "y ~ poly(X66,", d66, ",raw=TRUE) +",
+            "poly(X69,", d69, ",raw=TRUE) +",
+            "poly(X21,", d21, ",raw=TRUE) +",
+            "+ X19 + X111 + X3 + X59",
+            sep=" "
+          )
+        )
+        
+        cv <- cv_rmse(form, train)$mean_RMSE
+        
+        results <- rbind(
+          results,
+          data.frame(
+            d66 = d66,
+            d69 = d69,
+            d21 = d21,
+            RMSE = cv
+          )
+        )
+      }
+    }
+  }
+  
+  return(results)
+}
+
+# run the search
+poly_results <- search_poly_multivar()
+best_row <- poly_results[which.min(poly_results$RMSE), ]
+best_row
+
+search_poly_X3 <- function(max3=10) {
+  results <- data.frame()
+  
+  for (d3 in 1:max3){
+        
+    form <- as.formula(
+      paste(
+        "y ~",
+        "poly(X66, 5, raw=TRUE) +",
+        "poly(X69, 3, raw=TRUE) +",
+        "poly(X21, 10, raw=TRUE) +",
+        "poly(X3,", d3, ", raw=TRUE) +",
+        "X19 + X111 + X59",
+        sep=" "
+      )
+    )
+    
+    cv <- cv_rmse(form, train)$mean_RMSE
+    
+    results <- rbind(
+      results,
+      data.frame(
+        d3 = d3,
+        RMSE = cv
+      )
+    )
+  }
+  
+  return(results)
+}
+
+# run the search
+poly_results <- search_poly_X3()
+
+best_row <- poly_results[ which.min(poly_results$RMSE) , ]
+best_row
+
+# let's check again for X21, since previously our max degree is 10,
+# maybe if the degree greater than 10 is better
+
+search_poly_X21 <- function(max21 = 20) {
+  results <- data.frame()
+  
+  for (d21 in 10:max21) {
+    
+    form <- as.formula(
+      paste(
+        "y ~",
+        "poly(X66, 5, raw=TRUE) +",
+        "poly(X69, 3, raw=TRUE) +",
+        "poly(X3,  3, raw=TRUE) +",
+        "poly(X21,", d21, ", raw=TRUE) +",
+        "X19 + X111 + X59",
+        sep=" "
+      )
+    )
+    
+    cv <- cv_rmse(form, train)$mean_RMSE
+    
+    results <- rbind(results, data.frame(d21=d21, RMSE=cv))
+  }
+  
+  return(results)
+}
+poly21_results <- search_poly_X21(max21 = 15)
+
+# best degree
+best_row <- poly21_results[which.min(poly21_results$RMSE), ]
+best_row
+
+lm6 = lm(y~poly(X66, 5, raw=TRUE)+
+           poly(X69, 3, raw=TRUE)+
+           poly(X21, 14, raw=TRUE)+
+           poly(X3, 3, raw=TRUE)+
+           + X19 + X111 + X59)
+cv_rmse(lm6,train)
+
+```
+Now let's check the interactions for X66, X69, X21, X3
+```{r 7}
+base_rmse <- cv_rmse(lm6, train)$mean_RMSE
+
+base_string <- paste(
+  "y ~",
+  "poly(X66, 5, raw=TRUE) +",
+  "poly(X69, 3, raw=TRUE) +",
+  "poly(X21,14, raw=TRUE) +",
+  "poly(X3,  3, raw=TRUE) +",
+  "+ X19 + X111 + X59"
+)
+
+candidates <- c(
+  "X66:X69",
+  "X66:X21",
+  "X66:X3",
+  "X69:X21",
+  "X69:X3",
+  "X21:X3"
+)
+
+test_interactions <- function(base_string, candidates, train) {
+  
+  results <- data.frame()
+  
+  for (int in candidates) {
+    full_form_string <- paste(base_string, "+", int)
+    form <- as.formula(full_form_string)
+    
+    cv <- cv_rmse(form, train)$mean_RMSE
+    
+    results <- rbind(
+      results,
+      data.frame(
+        interaction = int,
+        RMSE = cv
+      )
+    )
+  }
+  
+  return(results)
+}
+interaction_results <- test_interactions(base_string, candidates, train)
+improved <- interaction_results$RMSE < base_rmse
+interaction_results[ improved , ]
+
+lm7 = lm(y~poly(X66, 5, raw=TRUE)+
+           poly(X69, 3, raw=TRUE)+
+           poly(X21, 14, raw=TRUE)+
+           poly(X3, 3, raw=TRUE)+
+           +X66:X21+X69:X21+X21:X3+
+           +X19+X111+X59)
+cv_rmse(lm7,train)
+```
+Next let's try 2nd degree of interactions ()
+
+```{r 8}
+generate_interactions2 <- function(var1, var2) {
+  terms <- c()
+  
+  for (i in 1:2) {
+    for (j in 1:2) {
+      terms <- c(terms, paste0("I(", var1, "^", i, " * ", var2, "^", j, ")"))
+    }
+  }
+  
+  return(terms)
+}
+
+int_X66_X21 <- generate_interactions2("X66", "X21")
+int_X69_X21 <- generate_interactions2("X69", "X21")
+int_X21_X3  <- generate_interactions2("X21", "X3")
+
+interaction_list <- c(int_X66_X21, int_X69_X21, int_X21_X3)
+length(interaction_list)   # should be 12
+
+# This is lm6, not lm7 to check whether higher interactions are better.
+
+base_string <- paste(
+  "y ~",
+  "poly(X66,5,raw=TRUE) +",
+  "poly(X69,3,raw=TRUE) +",
+  "poly(X21,14,raw=TRUE) +",
+  "poly(X3,3,raw=TRUE) +",
+  "X19 + X111 + X59 "
+)
+
+
+test_high_interactions <- function(base_string, interaction_list, train) {
+  
+  results <- data.frame()
+  
+  for (int in interaction_list) {
+    
+    form_string <- paste(base_string, "+", int)
+    form <- as.formula(form_string)
+    
+    cv <- cv_rmse(form, train)$mean_RMSE
+    
+    results <- rbind(
+      results,
+      data.frame(
+        interaction = int,
+        RMSE = cv
+      )
+    )
+  }
+  
+  return(results)
+}
+
+
+results_deg <- test_high_interactions(base_string, interaction_list, train)
+
+# Sort by RMSE
+sorted_interactions <- results_deg[order(results_deg$RMSE), ]
+
+
+rmse_lm6 <- cv_rmse(lm6, train)$mean_RMSE
+
+better <- sorted_interactions[ sorted_interactions$RMSE < rmse_lm6 , ]
+
+cat("\n=== Interactions BETTER than lm6 ===\n")
+print(better)
+
+better_terms <- c(
+  "I(X66^2 * X21^2)",
+  "I(X66^2 * X21^1)",
+  "I(X66^1 * X21^2)",
+  "I(X66^1 * X21^1)",
+  "I(X69^1 * X21^2)",
+  "I(X69^1 * X21^1)",
+  "I(X21^1 * X3^2)",
+  "I(X21^2 * X3^2)",
+  "I(X21^1 * X3^1)"
+)
+
+# best subset 2^9=512 subsets, it's still doable
+
+best_subset <- function(base_string, terms, train) {
+  
+  best_rmse <- Inf
+  best_model <- NULL
+  best_terms <- NULL
+  
+  k <- length(terms)
+  
+  for (size in 0:k) {
+    
+    if (size == 0) {
+      subsets <- list(character(0))
+    } else {
+      subsets <- combn(terms, size, simplify = FALSE)
+    }
+    
+    for (subset in subsets) {
+      
+      # Build formula
+      if (length(subset) == 0) {
+        form_string <- base_string
+      } else {
+        form_string <- paste(base_string, "+", paste(subset, collapse = " + "))
+      }
+      
+      rmse <- cv_rmse(as.formula(form_string), train)$mean_RMSE
+      
+      if (rmse < best_rmse) {
+        best_rmse <- rmse
+        best_model <- form_string
+        best_terms <- subset
+        message("New best RMSE: ", rmse,
+                " | terms: ", paste(subset, collapse=", "))
+      }
+    }
+  }
+  
+  list(
+    best_rmse = best_rmse,
+    best_terms = best_terms,
+    best_model = best_model
+  )
+}
+
+
+result_bs <- best_subset(base_string, better_terms, train)
+
+result_bs$best_rmse
+result_bs$best_terms
+result_bs$best_model
+
+
+lm8 = lm(y~poly(X66, 5, raw=TRUE)+
+           poly(X69, 3, raw=TRUE)+
+           poly(X21, 14, raw=TRUE)+
+           poly(X3, 3, raw=TRUE)+
+           +I(X66^2 * X21^2) + I(X69^1 * X21^2) + I(X21^1 * X3^2)+
+           +X19 + X111+X59)
+summary(lm8)
+cv_rmse(lm8,train)
+```
+Now our model is quite complex. Let's see if removing any of the term
+could reduce cv rmse.
+```{r 9}
+blocks <- c(
+  "poly(X66,5,raw=TRUE)",
+  "poly(X69,3,raw=TRUE)",
+  "poly(X21,14,raw=TRUE)",
+  "poly(X3,3,raw=TRUE)",
+  "I(X66^2 * X21^2)",
+  "I(X69^1 * X21^2)",
+  "I(X21^1 * X3^2)",
+  "X19",
+  "X111",
+  "X59"
+)
+
+best_subset_blocks <- function(block_terms, train) {
+  
+  best_rmse  <- Inf
+  best_model <- NULL
+  best_terms <- NULL
+  
+  k <- length(block_terms)
+  
+  for (size in 1:k) {# or 0:k if you want intercept-only too
+    subsets <- combn(block_terms, size, simplify = FALSE)
+    
+    for (subset in subsets) {
+      rhs <- paste(subset, collapse = " + ")
+      form_string <- paste("y ~", rhs)
+      
+      rmse <- cv_rmse(as.formula(form_string), train)$mean_RMSE
+      
+      if (rmse < best_rmse) {
+        best_rmse  <- rmse
+        best_model <- form_string
+        best_terms <- subset
+        message("New best RMSE: ", rmse,
+                " | terms: ", paste(subset, collapse = ", "))
+      }
+    }
+  }
+  
+  list(
+    best_rmse  = best_rmse,
+    best_terms = best_terms,
+    best_model = best_model
+  )
+}
+
+result_blocks <- best_subset_blocks(blocks, train)
+result_blocks$best_rmse
+result_blocks$best_terms
+result_blocks$best_model
+lm9 = lm(y ~ poly(X66,5,raw=TRUE) +
+           poly(X69,3,raw=TRUE) +
+           poly(X21,14,raw=TRUE) +
+           poly(X3,3,raw=TRUE) +
+           I(X66^2 * X21^2) +
+           I(X69^1 * X21^2) +
+           I(X21^1 * X3^2)+ 
+           X19 + X111)
+summary(lm9)
+cv_rmse(lm9,train)
+
+# Now we have finished everything with lm. Let's try it on Kaggle.
+
+test <- read.csv("test_predictors.csv")
+
+pred <- predict(lm9, newdata = test)
+sample <- read.csv("SampleSubmission.csv")
+
+submission <- data.frame(
+  id = sample$id,
+  y  = pred
+)
+
+write.csv(submission, "LM9_Submission.csv", row.names=FALSE)
+
+cat("Saved: LM9_Submission.csv\n")
+```
+
+Score on Kaggle:
+Private Score: 0.52147
+Public Score: 0.52681
+
+Now let's use GAM to get lower RMSE
+
+s: smoothing splines
+ti: smooth interactions
+```{r gam 1}
+library(mgcv)
+
+# This is similar with LM9, 
+# but we change the one variable polynomials to smoothing splines
+gam1_formula <- y ~
+  s(X66, k = 12) +
+  s(X69, k = 12) +
+  s(X21, k = 18) +
+  s(X3,  k = 10) +
+  I(X66^2 * X21^2) +
+  I(X69^1 * X21^2) + 
+  I(X21^1 * X3^2)+ 
+  X19 + X111
+
+# Fit GAM1
+gam1 <- gam(gam1_formula, data=train, method="REML", select=TRUE)
+
+summary(gam1)
+
+# Create cv_gam function
+cv_gam <- function(formula, data, K = 10, seed = 1) {
+  set.seed(seed)
+  
+  n <- nrow(data)
+  folds <- sample(rep(1:K, length.out = n))
+  
+  rmse <- numeric(K)
+  
+  for (k in 1:K) {
+    train_fold <- data[folds != k, ]
+    test_fold  <- data[folds == k, ]
+    
+    # Fit GAM
+    fit <- gam(formula, data = train_fold, method = "REML")
+    
+    # Predict
+    pred <- predict(fit, newdata = test_fold)
+    
+    # RMSE
+    rmse[k] <- sqrt(mean((pred - test_fold$y)^2))
+  }
+  
+  return(list(
+    mean_RMSE = mean(rmse),
+    sd_RMSE   = sd(rmse),
+    all_RMSE  = rmse
+  ))
+}
+cv_gam1 = cv_gam(gam1_formula,train)
+cv_gam1
+```
+Then, we change the interactions to smooth interactions.
+```{r gam 2}
+gam2_formula <- y ~
+  s(X66, k = 12) +
+  s(X69, k = 12) +
+  s(X21, k = 18) +
+  s(X3,  k = 10) +
+  ti(X66,X21, k=8) +
+  ti(X69,X21, k=8) + 
+  ti(X21,X3, k=8)+ 
+  X19 + X111
+
+gam2 <- gam(gam2_formula, data=train, method="REML", select=TRUE)
+
+summary(gam2)
+
+cv_gam2 = cv_gam(gam2_formula,train)
+cv_gam2
+cv_gam2$mean_RMSE < cv_gam1$mean_RMSE
+```
+From the summary function, the ti(X69,X21) p-value is quite suspicious.
+Let's try removing it and check the RMSE.
+```{r gam 3}
+gam3_formula <- y ~
+  s(X66, k = 12) +
+  s(X69, k = 12) +
+  s(X21, k = 18) +
+  s(X3,  k = 10) +
+  ti(X66, X21, k=8) +
+  ti(X21, X3,  k=8) +
+  X111 + X19
+
+gam3 <- gam(gam3_formula, data=train, method="REML", select=TRUE)
+
+summary(gam3)
+
+cv_gam3 = cv_gam(gam3_formula,train)
+cv_gam3
+cv_gam3$mean_RMSE < cv_gam2$mean_RMSE
+```
+
+X19 is a discrete variable, treating it as a categorical variable may improve the GAM’s performance.
+
+```{r gam 4}
+train$X19_f <- factor(train$X19)
+test$X19_f  <- factor(test$X19, levels = levels(train$X19_f))
+
+gam4_formula <- y ~
+  s(X66, k = 12) +
+  s(X69, k = 12) +
+  s(X21, k = 18) +
+  s(X3,  k = 10) +
+  
+  ti(X66, X21, k=8) +
+  ti(X21, X3,  k=8) +
+  
+  X111 + X19_f
+
+gam4 <- gam(gam4_formula, data=train, method="REML", select=TRUE)
+
+summary(gam4)
+
+cv_gam4 = cv_gam(gam4_formula,train)
+cv_gam4
+cv_gam4$mean_RMSE < cv_gam3$mean_RMSE
+
+pred <- predict(gam4, newdata = test)
+sample <- read.csv("SampleSubmission.csv")
+
+submission <- data.frame(
+  id = sample$id,
+  y  = pred
+)
+
+write.csv(submission, "GAM4_Submission.csv", row.names=FALSE)
+
+cat("Saved: GAM4_Submission.csv\n")
+```
+Score on Kaggle:
+Private Score: 0.48633
+Public Score: 0.49299
